@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect, Suspense } from 'react';
+import React, { useRef, useState, useEffect, Suspense, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { 
   MeshTransmissionMaterial, 
@@ -7,29 +7,126 @@ import {
   Sparkles,
   Lightformer
 } from '@react-three/drei';
-import { motion } from 'framer-motion';
-import { ArrowRight, Menu, ArrowUpRight } from 'lucide-react';
+import { motion, useScroll, useTransform, AnimatePresence } from 'framer-motion';
+import { ArrowRight, Menu } from 'lucide-react';
 import * as THREE from 'three';
 
 // -----------------------------------------------------------------------------
-// ERROR BOUNDARY: Catches crashes and shows them on screen
+// CONFIGURATION FOR SECTIONS
+// -----------------------------------------------------------------------------
+// This defines how the 3D object behaves in each section
+const SECTION_CONFIGS = {
+  hero: { 
+    color: '#ffffff', 
+    distortion: 0.4, 
+    chromaticAberration: 0.1, 
+    roughness: 0.05, 
+    scale: 3.5, 
+    speed: 1 
+  },
+  work: { 
+    color: '#ffffff', 
+    distortion: 0.0, // Sharp, crystalline
+    chromaticAberration: 1.5, // High rainbow effect (Prism)
+    roughness: 0.0, 
+    scale: 4.5, 
+    speed: 0.2 
+  },
+  agency: { 
+    color: '#C67C4E', // Brand color
+    distortion: 1.5, // High liquid distortion
+    chromaticAberration: 0.2, 
+    roughness: 0.2, 
+    scale: 3.0, 
+    speed: 3.0 // Fast spin
+  },
+  contact: { 
+    color: '#C67C4E', 
+    distortion: 0.2, 
+    chromaticAberration: 0.5, 
+    roughness: 0.1, 
+    scale: 2.0, // Smaller, intimate
+    speed: 0.5 
+  }
+};
+
+// -----------------------------------------------------------------------------
+// CINEMATIC TITLE COMPONENT
+// -----------------------------------------------------------------------------
+const CinematicTitle = () => {
+  const text = "VERO MEDIA";
+  const letters = text.split("");
+  
+  const container = {
+    hidden: { opacity: 0 },
+    visible: (i = 1) => ({
+      opacity: 1,
+      transition: { staggerChildren: 0.08, delayChildren: 0.5 }
+    })
+  };
+
+  const child = {
+    visible: {
+      opacity: 1,
+      y: 0,
+      filter: "blur(0px)",
+      scale: 1,
+      transition: {
+        type: "spring",
+        damping: 12,
+        stiffness: 100
+      }
+    },
+    hidden: {
+      opacity: 0,
+      y: 50,
+      filter: "blur(20px)",
+      scale: 1.5,
+    }
+  };
+
+  return (
+    <motion.div 
+      style={{ display: 'flex', overflow: 'hidden' }}
+      variants={container}
+      initial="hidden"
+      animate="visible"
+    >
+      {letters.map((letter, index) => (
+        <motion.span 
+          key={index} 
+          variants={child}
+          style={{ 
+            fontSize: '12vw', 
+            lineHeight: '0.9', 
+            fontWeight: 500, 
+            letterSpacing: '-0.05em', 
+            color: 'rgba(255,255,255,0.9)',
+            display: 'inline-block',
+            marginRight: letter === " " ? "2rem" : "0" // Handle spaces
+          }}
+        >
+          {letter}
+        </motion.span>
+      ))}
+    </motion.div>
+  );
+};
+
+// -----------------------------------------------------------------------------
+// ERROR BOUNDARY
 // -----------------------------------------------------------------------------
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
     this.state = { hasError: false, error: null };
   }
-  static getDerivedStateFromError(error) {
-    return { hasError: true, error };
-  }
-  componentDidCatch(error, errorInfo) {
-    console.error("Uncaught error:", error, errorInfo);
-  }
+  static getDerivedStateFromError(error) { return { hasError: true, error }; }
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ color: 'red', padding: '20px', background: 'black', height: '100vh', zIndex: 9999, position: 'relative' }}>
-          <h1>Something went wrong.</h1>
+        <div style={{ color: '#ff4444', padding: '20px', background: '#050505', height: '100vh', zIndex: 9999, position: 'relative' }}>
+          <h2>System Error</h2>
           <pre>{this.state.error && this.state.error.toString()}</pre>
         </div>
       );
@@ -39,52 +136,65 @@ class ErrorBoundary extends React.Component {
 }
 
 // -----------------------------------------------------------------------------
-// HOOKS
-// -----------------------------------------------------------------------------
-const useMousePosition = () => {
-  const [mouse, setMouse] = useState({ x: 0, y: 0 });
-  useEffect(() => {
-    const updateMouse = (e) => {
-      setMouse({ 
-        x: (e.clientX / window.innerWidth) * 2 - 1, 
-        y: -(e.clientY / window.innerHeight) * 2 + 1 
-      });
-    };
-    window.addEventListener('mousemove', updateMouse);
-    return () => window.removeEventListener('mousemove', updateMouse);
-  }, []);
-  return mouse;
-};
-
-// -----------------------------------------------------------------------------
 // 3D SCENE
 // -----------------------------------------------------------------------------
-const VeroLens = ({ mouse }) => {
+const VeroLens = ({ mouse, activeSection }) => {
   const mesh = useRef();
+  const materialRef = useRef();
   const { viewport } = useThree();
+  
+  // Current values to lerp from
+  const currentConfig = useRef({ ...SECTION_CONFIGS.hero });
 
-  useFrame(() => {
-    if (mesh.current) {
-      mesh.current.rotation.x = THREE.MathUtils.lerp(mesh.current.rotation.x, mouse.y * 0.5, 0.1);
-      mesh.current.rotation.y = THREE.MathUtils.lerp(mesh.current.rotation.y, mouse.x * 0.5, 0.1);
-    }
+  useFrame((state, delta) => {
+    if (!mesh.current || !materialRef.current) return;
+
+    // Get target config based on active section
+    const target = SECTION_CONFIGS[activeSection] || SECTION_CONFIGS.hero;
+
+    // LERP (Linear Interpolation) for smooth transitions
+    const lerpFactor = 2.5 * delta; // Adjust speed of transition here
+
+    currentConfig.current.color = target.color; // Colors animate differently in Three.js usually, but MeshTransmission handles string colors well enough for this
+    currentConfig.current.distortion = THREE.MathUtils.lerp(currentConfig.current.distortion, target.distortion, lerpFactor);
+    currentConfig.current.chromaticAberration = THREE.MathUtils.lerp(currentConfig.current.chromaticAberration, target.chromaticAberration, lerpFactor);
+    currentConfig.current.roughness = THREE.MathUtils.lerp(currentConfig.current.roughness, target.roughness, lerpFactor);
+    currentConfig.current.scale = THREE.MathUtils.lerp(currentConfig.current.scale, target.scale, lerpFactor);
+    currentConfig.current.speed = THREE.MathUtils.lerp(currentConfig.current.speed, target.speed, lerpFactor);
+
+    // Apply values
+    materialRef.current.distortion = currentConfig.current.distortion;
+    materialRef.current.chromaticAberration = currentConfig.current.chromaticAberration;
+    materialRef.current.roughness = currentConfig.current.roughness;
+    materialRef.current.color = currentConfig.current.color;
+
+    // Animate Mesh Scale
+    const viewportRatio = viewport.width < 7 ? 0.6 : 1; // Mobile adjustment
+    mesh.current.scale.setScalar(currentConfig.current.scale * viewportRatio);
+
+    // Animate Rotation
+    mesh.current.rotation.x += delta * 0.2 * currentConfig.current.speed;
+    mesh.current.rotation.y += delta * 0.3 * currentConfig.current.speed;
+    
+    // Add Mouse Influence
+    mesh.current.rotation.x += (mouse.y * 0.5 - mesh.current.rotation.x) * 0.1;
+    mesh.current.rotation.y += (mouse.x * 0.5 - mesh.current.rotation.y) * 0.1;
   });
 
   return (
     <Float speed={2} rotationIntensity={0.5} floatIntensity={0.5}>
-      <mesh ref={mesh} scale={viewport.width < 7 ? 2 : 3.5}>
+      <mesh ref={mesh}>
         <torusKnotGeometry args={[1, 0.35, 128, 32]} />
         <MeshTransmissionMaterial 
-          backside
-          samples={8}
-          thickness={0.2} 
-          roughness={0.05} 
-          clearcoat={1} 
-          transmission={1} 
-          ior={1.5} 
-          chromaticAberration={0.15} 
-          anisotropy={0.3}
-          color="#ffffff"
+          ref={materialRef}
+          backside={false}
+          samples={6}
+          resolution={512}
+          thickness={0.2}
+          clearcoat={1}
+          transmission={1}
+          ior={1.5}
+          anisotropy={0.1}
           background={new THREE.Color('#050505')}
         />
       </mesh>
@@ -104,25 +214,21 @@ const Lighting = () => (
   </>
 );
 
-const Scene = ({ mouse }) => {
+const Scene = ({ mouse, activeSection }) => {
   return (
-    <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', zIndex: 0, background: '#050505' }}>
+    <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100dvh', zIndex: 0, background: '#050505' }}>
       <Canvas 
-        dpr={[1, 2]} 
+        dpr={[1, 1.5]} 
         camera={{ position: [0, 0, 15], fov: 45 }} 
-        gl={{ alpha: true, antialias: true }}
-        onCreated={() => console.log("Canvas Created Successfully")}
+        gl={{ alpha: true, antialias: false, preserveDrawingBuffer: true }}
+        onCreated={({ gl }) => { gl.setClearColor(new THREE.Color('#050505')); }}
       >
-        <color attach="background" args={['#050505']} />
         <Suspense fallback={null}>
           <Lighting />
-          <VeroLens mouse={mouse} />
+          <VeroLens mouse={mouse} activeSection={activeSection} />
         </Suspense>
-        <Sparkles count={50} scale={10} size={2} speed={0.4} opacity={0.5} color="#C67C4E" />
+        <Sparkles count={40} scale={10} size={2} speed={0.4} opacity={0.5} color="#C67C4E" />
       </Canvas>
-      <div style={{ position: 'absolute', bottom: 20, left: 20, color: '#333', fontSize: '10px' }}>
-        Rendering 3D...
-      </div>
     </div>
   );
 };
@@ -204,9 +310,9 @@ const Cursor = () => {
 
 const Navigation = () => {
   return (
-    <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 flex items-center gap-4 px-2 py-2 bg-white/5 backdrop-blur-xl border border-white/10 rounded-full" style={{ position: 'fixed', bottom: '2rem', left: '50%', transform: 'translateX(-50%)', zIndex: 50, display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.5rem', background: 'rgba(255,255,255,0.05)', borderRadius: '9999px', border: '1px solid rgba(255,255,255,0.1)' }}>
+    <div style={{ position: 'fixed', bottom: '2rem', left: '50%', transform: 'translateX(-50%)', zIndex: 50, display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.5rem', background: 'rgba(255,255,255,0.05)', borderRadius: '9999px', border: '1px solid rgba(255,255,255,0.1)', backdropFilter: 'blur(10px)' }}>
       <Magnetic>
-        <button className="w-10 h-10 flex items-center justify-center rounded-full bg-transparent text-white hover:bg-white/10 transition-colors" style={{ width: '2.5rem', height: '2.5rem', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '9999px', background: 'transparent', color: 'white', border: 'none', cursor: 'pointer' }}>
+        <button style={{ width: '2.5rem', height: '2.5rem', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '9999px', background: 'transparent', color: 'white', border: 'none', cursor: 'pointer' }}>
           <Menu size={18} />
         </button>
       </Magnetic>
@@ -214,7 +320,7 @@ const Navigation = () => {
       <div style={{ width: '1px', height: '1rem', background: 'rgba(255,255,255,0.2)' }}></div>
       
       <nav style={{ display: 'flex', gap: '0.25rem' }}>
-        {['Work', 'Agency', 'Systems', 'Contact'].map((item) => (
+        {['Work', 'Agency', 'Contact'].map((item) => (
           <Magnetic key={item}>
             <a href={`#${item.toLowerCase()}`} style={{ padding: '0.5rem 1.25rem', fontSize: '0.875rem', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'rgba(255,255,255,0.7)', textDecoration: 'none', borderRadius: '9999px' }}>
               {item}
@@ -234,27 +340,33 @@ const Navigation = () => {
   );
 };
 
-const Section = ({ title, subtitle, children, id, align = "left" }) => {
+// Modified Section to report visibility
+const Section = ({ title, subtitle, children, id, align = "left", onInView }) => {
   return (
     <section id={id} style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '6rem', position: 'relative', zIndex: 10 }}>
-      <div style={{ maxWidth: '56rem', alignSelf: align === "right" ? "flex-end" : "flex-start", textAlign: align === "right" ? "right" : "left" }}>
-        <motion.div
-          initial={{ opacity: 0, y: 50 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true, margin: "-20%" }}
-          transition={{ duration: 0.8 }}
-        >
-          <span style={{ color: '#C67C4E', fontFamily: 'Space Mono, monospace', textTransform: 'uppercase', letterSpacing: '0.2em', fontSize: '0.875rem', marginBottom: '1rem', display: 'block' }}>
-            {subtitle}
-          </span>
-          <h2 style={{ fontSize: '4rem', fontFamily: 'Playfair Display, serif', color: 'white', marginBottom: '2rem', lineHeight: '1.1' }}>
-            {title}
-          </h2>
-          <div style={{ color: '#9ca3af', fontSize: '1.25rem', lineHeight: '1.625', maxWidth: '42rem', fontWeight: 300 }}>
-            {children}
-          </div>
-        </motion.div>
-      </div>
+      <motion.div
+        onViewportEnter={() => onInView && onInView(id)}
+        viewport={{ amount: 0.5 }} // Trigger when 50% visible
+      >
+        <div style={{ maxWidth: '56rem', alignSelf: align === "right" ? "flex-end" : "flex-start", textAlign: align === "right" ? "right" : "left", marginLeft: align === "right" ? "auto" : "0" }}>
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true, margin: "-20%" }}
+            transition={{ duration: 0.8 }}
+          >
+            <span style={{ color: '#C67C4E', fontFamily: 'Space Mono, monospace', textTransform: 'uppercase', letterSpacing: '0.2em', fontSize: '0.875rem', marginBottom: '1rem', display: 'block' }}>
+              {subtitle}
+            </span>
+            <h2 style={{ fontSize: '4rem', fontFamily: 'Playfair Display, serif', color: 'white', marginBottom: '2rem', lineHeight: '1.1' }}>
+              {title}
+            </h2>
+            <div style={{ color: '#9ca3af', fontSize: '1.25rem', lineHeight: '1.625', maxWidth: '42rem', fontWeight: 300 }}>
+              {children}
+            </div>
+          </motion.div>
+        </div>
+      </motion.div>
     </section>
   );
 };
@@ -263,8 +375,20 @@ const Section = ({ title, subtitle, children, id, align = "left" }) => {
 // MAIN APP
 // -----------------------------------------------------------------------------
 export default function App() {
-  const mouse = useMousePosition();
-  
+  const [activeSection, setActiveSection] = useState('hero');
+  const [mouse, setMouse] = useState({ x: 0, y: 0 });
+
+  useEffect(() => {
+    const updateMouse = (e) => {
+      setMouse({ 
+        x: (e.clientX / window.innerWidth) * 2 - 1, 
+        y: -(e.clientY / window.innerHeight) * 2 + 1 
+      });
+    };
+    window.addEventListener('mousemove', updateMouse);
+    return () => window.removeEventListener('mousemove', updateMouse);
+  }, []);
+
   return (
     <ErrorBoundary>
       <div style={{ position: 'relative', width: '100%', minHeight: '100vh', backgroundColor: '#050505', color: 'white' }}>
@@ -278,34 +402,52 @@ export default function App() {
         <Cursor />
         <Navigation />
         
-        <Scene mouse={mouse} />
+        {/* SCENE (Responds to activeSection) */}
+        <Scene mouse={mouse} activeSection={activeSection} />
 
+        {/* CONTENT */}
         <main style={{ position: 'relative', zIndex: 10 }}>
           
-          <section style={{ height: '100vh', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', position: 'relative', pointerEvents: 'none' }}>
-            <div style={{ textAlign: 'center', zIndex: 10, mixBlendMode: 'exclusion' }}>
-              <motion.div animate={{ opacity: 1, y: 0 }}>
-                <h1 style={{ fontSize: '12vw', lineHeight: '0.9', fontWeight: 500, letterSpacing: '-0.05em', color: 'rgba(255,255,255,0.9)', margin: 0 }}>
-                  VERO<br />MEDIA
-                </h1>
-              </motion.div>
-              
-              <div style={{ marginTop: '2rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '1rem' }}>
-                <span style={{ fontFamily: 'Space Mono, monospace', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.3em', color: 'rgba(255,255,255,0.6)' }}>Est. 2024</span>
-                <div style={{ width: '4px', height: '4px', background: '#C67C4E', borderRadius: '50%' }} />
-                <span style={{ fontFamily: 'Space Mono, monospace', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.3em', color: 'rgba(255,255,255,0.6)' }}>Digital Alchemy</span>
+          {/* HERO */}
+          <section 
+            style={{ height: '100vh', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', position: 'relative' }}
+          >
+            <motion.div 
+               onViewportEnter={() => setActiveSection('hero')}
+               viewport={{ amount: 0.6 }}
+               style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}
+            >
+              <div style={{ textAlign: 'center', zIndex: 10, mixBlendMode: 'exclusion' }}>
+                <CinematicTitle />
+                
+                <motion.div 
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ duration: 1, delay: 1.5 }}
+                  style={{ marginTop: '2rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '1rem' }}
+                >
+                  <span style={{ fontFamily: 'Space Mono, monospace', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.3em', color: 'rgba(255,255,255,0.6)' }}>Est. 2024</span>
+                  <div style={{ width: '4px', height: '4px', background: '#C67C4E', borderRadius: '50%' }} />
+                  <span style={{ fontFamily: 'Space Mono, monospace', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.3em', color: 'rgba(255,255,255,0.6)' }}>Digital Alchemy</span>
+                </motion.div>
               </div>
-            </div>
-            
-            <div style={{ position: 'absolute', bottom: '2.5rem', left: '6rem' }}>
-               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '0.5rem' }}>
-                  <span style={{ fontFamily: 'Space Mono, monospace', fontSize: '10px', color: '#6b7280', textTransform: 'uppercase' }}>Scroll to Explore</span>
-                  <div style={{ width: '1px', height: '3rem', background: 'linear-gradient(to bottom, #C67C4E, transparent)' }}></div>
-               </div>
-            </div>
+              
+              <div style={{ position: 'absolute', bottom: '2.5rem', left: '6rem' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '0.5rem' }}>
+                    <span style={{ fontFamily: 'Space Mono, monospace', fontSize: '10px', color: '#6b7280', textTransform: 'uppercase' }}>Scroll to Explore</span>
+                    <div style={{ width: '1px', height: '3rem', background: 'linear-gradient(to bottom, #C67C4E, transparent)' }}></div>
+                </div>
+              </div>
+            </motion.div>
           </section>
 
-          <Section id="work" subtitle="Recent Case Studies" title="Systems That Scale">
+          {/* SECTIONS */}
+          <Section 
+            id="work" 
+            subtitle="Recent Case Studies" 
+            title="Systems That Scale" 
+            onInView={setActiveSection}
+          >
             <p style={{ marginBottom: '1.5rem' }}>
               We don't just build websites; we engineer digital ecosystems. 
               By blending refractive aesthetics with robust React architecture, 
@@ -325,7 +467,13 @@ export default function App() {
             </div>
           </Section>
 
-          <Section id="agency" align="right" subtitle="Our Philosophy" title="The Lens of Truth">
+          <Section 
+            id="agency" 
+            align="right" 
+            subtitle="Our Philosophy" 
+            title="The Lens of Truth"
+            onInView={setActiveSection}
+          >
             <p>
               "Vero" means true. In an age of digital noise, clarity is the ultimate luxury.
               We strip away the non-essential to reveal the core truth of your brand.
@@ -333,7 +481,12 @@ export default function App() {
             </p>
           </Section>
 
-          <Section id="contact" subtitle="Initiate Protocol" title="Ready to transcend?">
+          <Section 
+            id="contact" 
+            subtitle="Initiate Protocol" 
+            title="Ready to transcend?"
+            onInView={setActiveSection}
+          >
             <div style={{ marginTop: '2rem' }}>
               <Magnetic>
                 <a href="mailto:hello@veromedia.org" style={{ display: 'inline-flex', alignItems: 'center', gap: '1rem', fontSize: '4rem', color: 'white', textDecoration: 'none' }}>
