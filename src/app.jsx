@@ -5,48 +5,39 @@ import {
   Environment, 
   Float, 
   Sparkles,
-  Lightformer
+  Lightformer,
+  Icosahedron,
+  TorusKnot,
+  Sphere,
+  Capsule
 } from '@react-three/drei';
-import { motion, useScroll, useTransform, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { ArrowRight, Menu } from 'lucide-react';
 import * as THREE from 'three';
 
 // -----------------------------------------------------------------------------
 // CONFIGURATION FOR SECTIONS
 // -----------------------------------------------------------------------------
-// This defines how the 3D object behaves in each section
 const SECTION_CONFIGS = {
   hero: { 
+    shape: 'knot',
     color: '#ffffff', 
-    distortion: 0.4, 
-    chromaticAberration: 0.1, 
-    roughness: 0.05, 
-    scale: 3.5, 
-    speed: 1 
+    config: { roughness: 0.05, ior: 1.5, chromaticAberration: 0.1 }
   },
   work: { 
+    shape: 'prism',
     color: '#ffffff', 
-    distortion: 0.0, // Sharp, crystalline
-    chromaticAberration: 1.5, // High rainbow effect (Prism)
-    roughness: 0.0, 
-    scale: 4.5, 
-    speed: 0.2 
+    config: { roughness: 0.0, ior: 2.0, chromaticAberration: 1.5 } // High refraction for 'gem' look
   },
   agency: { 
-    color: '#C67C4E', // Brand color
-    distortion: 1.5, // High liquid distortion
-    chromaticAberration: 0.2, 
-    roughness: 0.2, 
-    scale: 3.0, 
-    speed: 3.0 // Fast spin
+    shape: 'capsule',
+    color: '#C67C4E', 
+    config: { roughness: 0.2, ior: 1.2, chromaticAberration: 0.2 }
   },
   contact: { 
+    shape: 'orb',
     color: '#C67C4E', 
-    distortion: 0.2, 
-    chromaticAberration: 0.5, 
-    roughness: 0.1, 
-    scale: 2.0, // Smaller, intimate
-    speed: 0.5 
+    config: { roughness: 0.1, ior: 1.5, chromaticAberration: 0.5 }
   }
 };
 
@@ -71,11 +62,7 @@ const CinematicTitle = () => {
       y: 0,
       filter: "blur(0px)",
       scale: 1,
-      transition: {
-        type: "spring",
-        damping: 12,
-        stiffness: 100
-      }
+      transition: { type: "spring", damping: 12, stiffness: 100 }
     },
     hidden: {
       opacity: 0,
@@ -103,7 +90,7 @@ const CinematicTitle = () => {
             letterSpacing: '-0.05em', 
             color: 'rgba(255,255,255,0.9)',
             display: 'inline-block',
-            marginRight: letter === " " ? "2rem" : "0" // Handle spaces
+            marginRight: letter === " " ? "2rem" : "0"
           }}
         >
           {letter}
@@ -136,69 +123,104 @@ class ErrorBoundary extends React.Component {
 }
 
 // -----------------------------------------------------------------------------
-// 3D SCENE
+// 3D SCENE & MORPHING LOGIC
 // -----------------------------------------------------------------------------
-const VeroLens = ({ mouse, activeSection }) => {
-  const mesh = useRef();
-  const materialRef = useRef();
+
+// Reusable Material Component to ensure consistency
+const GlassMaterial = ({ config, color }) => (
+  <MeshTransmissionMaterial 
+    backside={false}
+    samples={6}
+    resolution={512}
+    thickness={0.25}
+    anisotropy={0.1}
+    clearcoat={1}
+    {...config}
+    color={color}
+    background={new THREE.Color('#050505')}
+  />
+);
+
+// Individual Shapes that scale in/out
+const MorphingShape = ({ activeSection, mouse }) => {
+  const group = useRef();
   const { viewport } = useThree();
   
-  // Current values to lerp from
-  const currentConfig = useRef({ ...SECTION_CONFIGS.hero });
+  // Refs for individual meshes
+  const knot = useRef();
+  const prism = useRef();
+  const capsule = useRef();
+  const orb = useRef();
 
   useFrame((state, delta) => {
-    if (!mesh.current || !materialRef.current) return;
+    if (!group.current) return;
 
-    // Get target config based on active section
-    const target = SECTION_CONFIGS[activeSection] || SECTION_CONFIGS.hero;
-
-    // LERP (Linear Interpolation) for smooth transitions
-    const lerpFactor = 2.5 * delta; // Adjust speed of transition here
-
-    currentConfig.current.color = target.color; // Colors animate differently in Three.js usually, but MeshTransmission handles string colors well enough for this
-    currentConfig.current.distortion = THREE.MathUtils.lerp(currentConfig.current.distortion, target.distortion, lerpFactor);
-    currentConfig.current.chromaticAberration = THREE.MathUtils.lerp(currentConfig.current.chromaticAberration, target.chromaticAberration, lerpFactor);
-    currentConfig.current.roughness = THREE.MathUtils.lerp(currentConfig.current.roughness, target.roughness, lerpFactor);
-    currentConfig.current.scale = THREE.MathUtils.lerp(currentConfig.current.scale, target.scale, lerpFactor);
-    currentConfig.current.speed = THREE.MathUtils.lerp(currentConfig.current.speed, target.speed, lerpFactor);
-
-    // Apply values
-    materialRef.current.distortion = currentConfig.current.distortion;
-    materialRef.current.chromaticAberration = currentConfig.current.chromaticAberration;
-    materialRef.current.roughness = currentConfig.current.roughness;
-    materialRef.current.color = currentConfig.current.color;
-
-    // Animate Mesh Scale
-    const viewportRatio = viewport.width < 7 ? 0.6 : 1; // Mobile adjustment
-    mesh.current.scale.setScalar(currentConfig.current.scale * viewportRatio);
-
-    // Animate Rotation
-    mesh.current.rotation.x += delta * 0.2 * currentConfig.current.speed;
-    mesh.current.rotation.y += delta * 0.3 * currentConfig.current.speed;
+    // Base Rotation
+    group.current.rotation.x += delta * 0.1;
+    group.current.rotation.y += delta * 0.15;
     
-    // Add Mouse Influence
-    mesh.current.rotation.x += (mouse.y * 0.5 - mesh.current.rotation.x) * 0.1;
-    mesh.current.rotation.y += (mouse.x * 0.5 - mesh.current.rotation.y) * 0.1;
+    // Mouse Interaction (Parallax)
+    group.current.position.x = THREE.MathUtils.lerp(group.current.position.x, mouse.x * 0.5 + 3, 0.05); // biased to right (+3)
+    group.current.position.y = THREE.MathUtils.lerp(group.current.position.y, mouse.y * 0.5, 0.05);
+
+    // Helper to animate scale
+    const animateScale = (ref, targetScale) => {
+      if (ref.current) {
+        ref.current.scale.lerp(new THREE.Vector3(targetScale, targetScale, targetScale), delta * 4);
+        // Rotate active ones slightly faster
+        if (targetScale > 0.1) {
+           ref.current.rotation.x += delta * 0.2;
+           ref.current.rotation.y += delta * 0.2;
+        }
+      }
+    };
+
+    // Determine target scales based on activeSection
+    const currentShape = SECTION_CONFIGS[activeSection]?.shape || 'knot';
+    const mobileRatio = viewport.width < 7 ? 0.6 : 1;
+
+    animateScale(knot, currentShape === 'knot' ? 3 * mobileRatio : 0);
+    animateScale(prism, currentShape === 'prism' ? 3.5 * mobileRatio : 0);
+    animateScale(capsule, currentShape === 'capsule' ? 2.5 * mobileRatio : 0);
+    animateScale(orb, currentShape === 'orb' ? 2.5 * mobileRatio : 0);
   });
 
   return (
-    <Float speed={2} rotationIntensity={0.5} floatIntensity={0.5}>
-      <mesh ref={mesh}>
-        <torusKnotGeometry args={[1, 0.35, 128, 32]} />
-        <MeshTransmissionMaterial 
-          ref={materialRef}
-          backside={false}
-          samples={6}
-          resolution={512}
-          thickness={0.2}
-          clearcoat={1}
-          transmission={1}
-          ior={1.5}
-          anisotropy={0.1}
-          background={new THREE.Color('#050505')}
-        />
-      </mesh>
-    </Float>
+    <group ref={group} position={[3, 0, 0]}> {/* Positioned to the right side */}
+      
+      {/* HERO: TorusKnot */}
+      <Float speed={2} rotationIntensity={0.5} floatIntensity={0.5}>
+        <mesh ref={knot}>
+          <torusKnotGeometry args={[1, 0.35, 128, 32]} />
+          <GlassMaterial config={SECTION_CONFIGS.hero.config} color={SECTION_CONFIGS.hero.color} />
+        </mesh>
+      </Float>
+
+      {/* WORK: Icosahedron (Prism) */}
+      <Float speed={3} rotationIntensity={1} floatIntensity={0.5}>
+        <mesh ref={prism}>
+          <Icosahedron args={[1, 0]} />
+          <GlassMaterial config={SECTION_CONFIGS.work.config} color={SECTION_CONFIGS.work.color} />
+        </mesh>
+      </Float>
+
+      {/* AGENCY: Capsule */}
+      <Float speed={2} rotationIntensity={0.5} floatIntensity={0.5}>
+        <mesh ref={capsule}>
+          <Capsule args={[0.7, 2, 4, 16]} />
+          <GlassMaterial config={SECTION_CONFIGS.agency.config} color={SECTION_CONFIGS.agency.color} />
+        </mesh>
+      </Float>
+
+      {/* CONTACT: Sphere (Orb) */}
+      <Float speed={1.5} rotationIntensity={0.2} floatIntensity={1}>
+        <mesh ref={orb}>
+          <Sphere args={[1.2, 32, 32]} />
+          <GlassMaterial config={SECTION_CONFIGS.contact.config} color={SECTION_CONFIGS.contact.color} />
+        </mesh>
+      </Float>
+
+    </group>
   );
 };
 
@@ -225,7 +247,7 @@ const Scene = ({ mouse, activeSection }) => {
       >
         <Suspense fallback={null}>
           <Lighting />
-          <VeroLens mouse={mouse} activeSection={activeSection} />
+          <MorphingShape mouse={mouse} activeSection={activeSection} />
         </Suspense>
         <Sparkles count={40} scale={10} size={2} speed={0.4} opacity={0.5} color="#C67C4E" />
       </Canvas>
